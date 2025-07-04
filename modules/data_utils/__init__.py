@@ -1,12 +1,10 @@
-import ast
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, cast, Tuple
 from functools import reduce
 
 import h5py
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
-
+from torch.utils.data import Dataset
 
 class H5LazyDataset(Dataset):
 
@@ -28,10 +26,10 @@ class H5LazyDataset(Dataset):
         return self.length
 
     def __getitem__(self, index) -> Tuple[Any, Any]:
-        f = self.get_file()
-        data: Any = f[self.data_key][index]
+        f: h5py.File = self.get_file()
 
-        label: Any = f[self.label_key][index]
+        data: Any = cast(h5py.Dataset, f[self.data_key])[index]
+        label: Any = cast(h5py.Dataset, f[self.label_key])[index]
 
         data_transformed: torch.Tensor = reduce(lambda _data, transformer: transformer(_data), self.data_transforms, data)
         label_transformed: torch.Tensor = reduce(lambda _label, transformer: transformer(_label), self.label_transforms, label)
