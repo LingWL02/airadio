@@ -1,4 +1,4 @@
-from typing import Any, Callable, cast, Tuple
+from typing import Any, Callable, cast, Tuple, TypeVar, Generic, Callable
 from functools import reduce
 from abc import ABC, abstractmethod
 
@@ -8,6 +8,8 @@ import torch
 from torch.utils.data import Dataset
 
 from constants import FREQ_RES_MHZ, FREQ_START_MHZ, FREQS_MHZ
+
+T = TypeVar('T', bound=torch.Tensor)
 
 class H5LazyDataset(Dataset):
 
@@ -69,16 +71,47 @@ class DataProcessor(ABC):
         return (data - _min) / (_max - _min)
 
     @staticmethod
-    def generate_centers(data: torch.Tensor) -> torch.Tensor:
-        output: torch.Tensor = torch.zeros_like(FREQS_MHZ, dtype=torch.float64)
+    def sparse_centers(data: torch.Tensor) -> torch.Tensor:
+        data_out: torch.Tensor = torch.zeros_like(FREQS_MHZ, dtype=torch.float64)
         midpoints: torch.Tensor = data.mean(dim=1)
         indexes: torch.Tensor = ((midpoints - FREQ_START_MHZ) / FREQ_RES_MHZ).round().to(torch.int64)
-        indexes = indexes.clamp(0, output.numel() - 1)
-        output[indexes] = 1
+        indexes = indexes.clamp(0, data_out.numel() - 1)
 
-        return output
+        data_out[indexes] = 1
+
+        return data_out
 
     @staticmethod
-    def generate_spreads(data: torch.Tensor, freqs: torch.Tensor=FREQS_MHZ) -> torch.Tensor | None:
-        # WIP
-        pass
+    def identity(data: torch.Tensor) -> torch.Tensor:
+        return data
+
+class MultiPipeline(Tuple[torch.Tensor, ...]):
+
+    @classmethod
+    def multiply(cls, n: int) -> Callable[[torch.Tensor], 'MultiPipeline']:
+        def mark(data: torch.Tensor) -> torch.Tensor:
+            setattr(data, '__multiplied__', True)
+            return data
+
+        def _multiply(data: torch.Tensor) -> MultiPipeline:
+            if getattr(data, '__multiplied__', False):
+                raise RuntimeError(
+                    'multiply() can only be called once within a transform pipeline.'
+                )
+
+            return cls(mark(data.clone()) for _ in range(n))
+
+        return _multiply
+
+    @classmethod
+    def apply(cls, *args: Callable[[torch.Tensor], torch.Tensor]) -> Callable[['MultiPipeline'], 'MultiPipeline']:
+        def _apply(multi_pipeline: MultiPipeline) -> MultiPipeline:
+            if not isinstance(multi_pipeline, cls):
+                raise TypeError(f'Expected MultiPipeline, got {type(multi_pipeline).__name__}')
+
+            return cls(
+                arg(data) for
+                arg, data in zip(args, multi_pipeline, strict=True)
+            )
+
+        return _apply
