@@ -1,4 +1,4 @@
-from typing import Any, Callable, cast, Tuple, Callable
+from typing import Any, Callable, cast, Tuple, Callable, Protocol
 from functools import reduce
 from abc import ABC, abstractmethod
 
@@ -126,26 +126,26 @@ class DataUtils(ABC):
         return cls._sparse(band_stops)
 
 
-class MultiPipeline(Tuple[torch.Tensor, ...]):
+class MultiPipeline(tuple['torch.Tensor | MultiPipeline | Any', ...]):
+
+    def __str__(self, n: int = 0) -> str:
+        body: str = ',\n'.join(
+            (n + 1) * '\t' + data_str for data_str in (
+                data.__str__(n + 1) if isinstance(data, self.__class__) else data.__str__()
+                for data in self
+            )
+        )
+        return f"""MultiPipeline(\n{body}\n{n * '\t'})"""
 
     @classmethod
-    def split(cls, n: int) -> Callable[[torch.Tensor], 'MultiPipeline']:
-        def mark(data: torch.Tensor) -> torch.Tensor:
-            setattr(data, '__splitted__', True)
-            return data
-
-        def _split(data: torch.Tensor) -> MultiPipeline:
-            if getattr(data, '__splitted__', False):
-                raise RuntimeError(
-                    'split() can only be called once within a transforms pipeline.'
-                )
-
-            return cls(mark(data.clone()) for _ in range(n))
+    def split(cls, n: int) -> Callable[['torch.Tensor | MultiPipeline'], 'MultiPipeline']:
+        def _split(data: torch.Tensor | MultiPipeline) -> MultiPipeline:
+            return cls(data.clone() for _ in range(n))
 
         return _split
 
     @classmethod
-    def apply(cls, *args: Callable[[torch.Tensor], torch.Tensor]) -> Callable[['MultiPipeline'], 'MultiPipeline']:
+    def apply(cls, *args: Callable[[Any], Any]) -> Callable[['MultiPipeline'], 'MultiPipeline']:
         def _apply(multi_pipeline: MultiPipeline) -> MultiPipeline:
             if not isinstance(multi_pipeline, cls):
                 raise TypeError(f'Expected MultiPipeline, got {type(multi_pipeline).__name__}')
@@ -156,3 +156,22 @@ class MultiPipeline(Tuple[torch.Tensor, ...]):
             )
 
         return _apply
+
+    @classmethod
+    def _flatten(cls, data: Any) -> Tuple:
+        if isinstance(data, cls):
+            return cls.flatten(data)
+
+        return (data,)
+
+    @classmethod
+    def flatten(cls, multi_pipeline: 'MultiPipeline') -> 'MultiPipeline':
+        if not isinstance(multi_pipeline, cls):
+            raise TypeError(f'Expected MultiPipeline, got {type(multi_pipeline).__name__}')
+
+        return cls(
+            reduce(lambda accumulator, data: accumulator + cls._flatten(data), multi_pipeline, ())
+        )
+
+    def clone(self) -> 'MultiPipeline':
+        return self.__class__(data.clone() for data in self)
