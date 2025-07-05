@@ -1,15 +1,16 @@
-from typing import Any, Callable, cast, Tuple, TypeVar, Generic, Callable
+from typing import Any, Callable, cast, Tuple, Callable
 from functools import reduce
 from abc import ABC, abstractmethod
 
 import h5py
+import matplotlib.axes
 import numpy as np
 import torch
+import matplotlib
+import matplotlib.pyplot as plt
 from torch.utils.data import Dataset
 
 from constants import FREQ_RES_MHZ, FREQ_START_MHZ, FREQS_MHZ
-
-T = TypeVar('T', bound=torch.Tensor)
 
 class H5LazyDataset(Dataset):
 
@@ -56,11 +57,32 @@ class H5LazyDataset(Dataset):
 
         return self._file
 
-class DataProcessor(ABC):
+
+class DataUtils(ABC):
 
     @abstractmethod
     def __sentinel__(self) -> None:
         """A sentinel method to ensure this class is abstract."""
+
+    @staticmethod
+    def plot_spectrum(
+        data: torch.Tensor, freqs: torch.Tensor = FREQS_MHZ, axes: matplotlib.axes.Axes | None = None, title: str | None = None
+    ) -> None:
+
+        if axes is None:
+            _, axes = plt.subplots()
+
+        axes.plot(freqs.numpy(force=True), data.numpy(force=True))
+        axes.set_xlabel('Frequency')
+        axes.set_ylabel('Magnitude')
+        if title is not None:
+            axes.set_title(title)
+
+        axes.grid(True)
+
+    @staticmethod
+    def identity(data: torch.Tensor) -> torch.Tensor:
+        return data
 
     @staticmethod
     def min_max_normalize(data: torch.Tensor) -> torch.Tensor:
@@ -71,37 +93,56 @@ class DataProcessor(ABC):
         return (data - _min) / (_max - _min)
 
     @staticmethod
-    def sparse_centers(data: torch.Tensor) -> torch.Tensor:
-        data_out: torch.Tensor = torch.zeros_like(FREQS_MHZ, dtype=torch.float64)
-        midpoints: torch.Tensor = data.mean(dim=1)
-        indexes: torch.Tensor = ((midpoints - FREQ_START_MHZ) / FREQ_RES_MHZ).round().to(torch.int64)
-        indexes = indexes.clamp(0, data_out.numel() - 1)
+    def _calculate_indexes(freqs: torch.Tensor) -> torch.Tensor:
+        indexes: torch.Tensor = ((freqs - FREQ_START_MHZ) / FREQ_RES_MHZ).round().to(torch.int64)
 
+        return indexes.clamp(0, FREQS_MHZ.numel() - 1)
+
+    @classmethod
+    def _sparse(cls, data: torch.Tensor) -> torch.Tensor:
+        indexes: torch.Tensor = cls._calculate_indexes(data)
+        data_out: torch.Tensor = torch.zeros_like(FREQS_MHZ, dtype=torch.float64)
         data_out[indexes] = 1
 
         return data_out
 
-    @staticmethod
-    def identity(data: torch.Tensor) -> torch.Tensor:
-        return data
+    @classmethod
+    def sparse_band_centers(cls, data: torch.Tensor) -> torch.Tensor:
+        band_centers: torch.Tensor = data.mean(dim=1)
+
+        return cls._sparse(band_centers)
+
+    @classmethod
+    def sparse_band_starts(cls, data: torch.Tensor) -> torch.Tensor:
+        band_starts: torch.Tensor = data[:, 0]
+
+        return cls._sparse(band_starts)
+
+
+    @classmethod
+    def sparse_band_stops(cls, data: torch.Tensor) -> torch.Tensor:
+        band_stops: torch.Tensor = data[:, 1]
+
+        return cls._sparse(band_stops)
+
 
 class MultiPipeline(Tuple[torch.Tensor, ...]):
 
     @classmethod
-    def multiply(cls, n: int) -> Callable[[torch.Tensor], 'MultiPipeline']:
+    def split(cls, n: int) -> Callable[[torch.Tensor], 'MultiPipeline']:
         def mark(data: torch.Tensor) -> torch.Tensor:
-            setattr(data, '__multiplied__', True)
+            setattr(data, '__splitted__', True)
             return data
 
-        def _multiply(data: torch.Tensor) -> MultiPipeline:
-            if getattr(data, '__multiplied__', False):
+        def _split(data: torch.Tensor) -> MultiPipeline:
+            if getattr(data, '__splitted__', False):
                 raise RuntimeError(
-                    'multiply() can only be called once within a transform pipeline.'
+                    'split() can only be called once within a transforms pipeline.'
                 )
 
             return cls(mark(data.clone()) for _ in range(n))
 
-        return _multiply
+        return _split
 
     @classmethod
     def apply(cls, *args: Callable[[torch.Tensor], torch.Tensor]) -> Callable[['MultiPipeline'], 'MultiPipeline']:
