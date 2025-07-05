@@ -1,10 +1,13 @@
 from typing import Any, Callable, cast, Tuple
 from functools import reduce
+from abc import ABC, abstractmethod
 
 import h5py
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+
+from constants import FREQ_RES_MHZ, FREQ_START_MHZ, FREQS_MHZ
 
 class H5LazyDataset(Dataset):
 
@@ -50,3 +53,32 @@ class H5LazyDataset(Dataset):
             self._file = h5py.File(self.path, 'r')
 
         return self._file
+
+class DataProcessor(ABC):
+
+    @abstractmethod
+    def __sentinel__(self) -> None:
+        """A sentinel method to ensure this class is abstract."""
+
+    @staticmethod
+    def min_max_normalize(data: torch.Tensor) -> torch.Tensor:
+        _min, _max = data.aminmax()
+        if _min == _max:
+            return torch.zeros_like(data)
+
+        return (data - _min) / (_max - _min)
+
+    @staticmethod
+    def generate_centers(data: torch.Tensor) -> torch.Tensor:
+        output: torch.Tensor = torch.zeros_like(FREQS_MHZ, dtype=torch.float64)
+        midpoints: torch.Tensor = data.mean(dim=1)
+        indexes: torch.Tensor = ((midpoints - FREQ_START_MHZ) / FREQ_RES_MHZ).round().to(torch.int64)
+        indexes = indexes.clamp(0, output.numel() - 1)
+        output[indexes] = 1
+
+        return output
+
+    @staticmethod
+    def generate_spreads(data: torch.Tensor, freqs: torch.Tensor=FREQS_MHZ) -> torch.Tensor | None:
+        # WIP
+        pass
